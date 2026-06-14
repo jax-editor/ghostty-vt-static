@@ -1,0 +1,94 @@
+name: Build static libghostty-vt
+
+on:
+  push:
+    tags:
+      - 'v*-*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: aarch64
+          - os: macos-14
+            platform: macos
+            arch: aarch64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Single third-party Action handles all toolchain provisioning.
+      # nixpkgs is pinned via flake.lock; zig/cmake/ninja come from
+      # cachix.org's binary cache (no compile cost in CI).
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build
+        run: nix develop --command ./build.sh
+
+      - name: Smoke-test link (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          # Tiny program that includes the headers and links the full
+          # set. Catches glibc/ABI issues immediately.
+          cat >/tmp/link_test.c <<'EOF'
+          #include <ghostty/vt.h>
+          int main(void) { return 0; }
+          EOF
+          nix develop --command bash -c '
+            cc -I out/include /tmp/link_test.c \
+               -L out/lib -lghostty-vt -lhighway -lsimdutf \
+               -lm -ldl -lpthread -lstdc++ -o /tmp/link_test
+            /tmp/link_test
+          '
+
+      - name: Smoke-test link (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cat >/tmp/link_test.c <<'EOF'
+          #include <ghostty/vt.h>
+          int main(void) { return 0; }
+          EOF
+          nix develop --command bash -c '
+            cc -I out/include /tmp/link_test.c \
+               -L out/lib -lghostty-vt -lhighway -lsimdutf \
+               -lc++ -o /tmp/link_test
+            /tmp/link_test
+          '
+
+      - name: Package tarball
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          name="ghostty-vt-static-${version}-${{ matrix.platform }}-${{ matrix.arch }}"
+          cp -R out "$name"
+          tar czf "${name}.tar.gz" "$name"
+          ls -la "${name}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostty-vt-static-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ghostty-vt-static-*-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: ghostty-vt-static-*.tar.gz

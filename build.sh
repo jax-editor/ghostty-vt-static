@@ -120,9 +120,34 @@ check_repack_still_needed
 cd "${BUILD_DIR}/ghostty"
 export ZIG_LOCAL_CACHE_DIR="${BUILD_DIR}/ghostty/.zig-cache"
 
+# Force a BASELINE CPU target so the static archives run on any CPU of this
+# architecture, not just the build runner's. With no target, Zig builds for the
+# build runner's *native* CPU and bakes its ISA (e.g. AVX-512) into the objects
+# — including highway/simdutf. When a consumer runs on a CPU with a lower ISA
+# (GitHub rotates runner hardware, and some newer cloud parts dropped AVX-512),
+# that baked-in instruction faults with SIGILL. An explicit target triple makes
+# Zig default the CPU model to `baseline` for the arch; highway/simdutf still
+# select higher kernels at runtime via their own dynamic dispatch when present.
+# (We keep the host arch/os — this is a baseline-CPU build, not a cross build.)
+case "$(uname -s)" in
+    Darwin) ZIG_OS="macos" ;;
+    Linux)  ZIG_OS="linux-gnu" ;;
+    *) echo "Error: unsupported OS $(uname -s)" >&2; exit 1 ;;
+esac
+case "$(uname -m)" in
+    x86_64)        ZIG_ARCH="x86_64" ;;
+    arm64|aarch64) ZIG_ARCH="aarch64" ;;
+    *) echo "Error: unsupported arch $(uname -m)" >&2; exit 1 ;;
+esac
+ZIG_TARGET="${ZIG_ARCH}-${ZIG_OS}"
+echo "Building for baseline target: ${ZIG_TARGET}"
+
 echo "Configuring..."
+# GHOSTTY_ZIG_BUILD_FLAGS is consumed as a CMake list (expanded as separate
+# argv to `zig build`), so multiple flags must be ';'-separated, not space-
+# separated — a space would be passed as one escaped argument.
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-    -DGHOSTTY_ZIG_BUILD_FLAGS="-Demit-xcframework=false"
+    -DGHOSTTY_ZIG_BUILD_FLAGS="-Demit-xcframework=false;-Dtarget=${ZIG_TARGET}"
 echo "Compiling..."
 cmake --build build
 
